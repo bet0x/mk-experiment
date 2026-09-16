@@ -1,11 +1,11 @@
-# Only the kernel is fake
+# Only the kernel is simulated
 
 mk-experiment/kerf-panel. A control panel for `kerf`, the multikernel
 management tool at github.com/multikernel/kerf. Two pieces: `kerfd`, an
 HTTP API that holds the privilege, and a static web UI that holds none.
 There is no multikernel host yet, so the API ships with a second
-implementation of its own host port — a userspace emulator that fakes
-the privileged syscalls and the console device, and nothing else.
+implementation of its own host port — a userspace simulator that stands
+in for the kernel, and for nothing above it.
 
 This is a spec for work not yet started. Nothing is built, no repo is
 created. Read it and say where the shape is wrong.
@@ -71,7 +71,7 @@ carries a TODO at `kernel/multikernel/core.c:324` saying `kernfs_notify()`
 should be called on the status file's node and is not. Nothing in
 `kernel/multikernel/` calls it. A `poll()` on that file will therefore
 never wake, so `/events` reads on an interval — one second, configurable
-— and the fake adapter does the same rather than pushing instantly, so
+— and the simulator does the same rather than pushing instantly, so
 the UI is built against the latency the real host has.
 
 **Devices are lent per PCI function, and the spawn drives them
@@ -111,7 +111,7 @@ JSON surface kerf lacks.
 ## 2. The seam is verbs, not paths
 
 The obvious way to build without hardware is to point everything at a
-fake directory tree. It does not work here: `load`, `exec` and `kill`
+directory tree of our own. It does not work here: `load`, `exec` and `kill`
 are syscalls, and `console` is a character device. No amount of path
 redirection reaches them.
 
@@ -121,13 +121,14 @@ implementations:
 ```
 kerfd/host/ports.py     HostPort — the verbs, and the read models
 kerfd/host/live.py      LiveHost — real kerf, real syscalls, needs root
-kerfd/host/fake.py      FakeHost — fake sysfs tree, fake syscalls
+kerfd/host/sim.py       SimHost  — simulated sysfs tree and syscalls
 ```
 
-**The rule the whole project follows: fake the kernel, and nothing
-above it.** Everything in `FakeHost` that is not the kernel is real. Real `pylibfdt`
-blobs, real DTBO generation by kerf's own `OverlayGenerator`, real
-validation by kerf's own `MultikernelValidator`. A fake `create` that
+**The rule the whole project follows: simulate the kernel, and nothing
+above it.** Everything in `SimHost` that is not the kernel is real. Real
+`pylibfdt` blobs, real DTBO generation by kerf's own `OverlayGenerator`,
+real validation by kerf's own `MultikernelValidator`. A simulated
+`create` that
 asks for a CPU another instance holds fails with kerf's genuine error
 text, because it is kerf's validator that refuses it.
 
@@ -186,17 +187,18 @@ functions with no click in them, so they are imported directly:
 `load.main.kexec_file_load`, `exec.main.boot_multikernel`,
 `kill.main.halt_multikernel`.
 
-## 4. `FakeHost`, the emulator
+## 4. `SimHost`, the simulator
 
-`FakeHost` stands in for the kernel's side of every interface kerf
+`SimHost` stands in for the kernel's side of every interface kerf
 touches, and that is more than the syscalls: three syscalls
 (`kexec_file_load` and the two `reboot` commands), two character devices
 (`/dev/mktty` and `/dev/dma_heap/multikernel`), three procfs files, the
 NUMA sysfs tree, and the whole kernfs filesystem with its overlay
 transactions and its instance state machine. The title of this document
-is a claim about the other direction: nothing above the kernel is faked.
+is a claim about the other direction: nothing above the kernel is
+simulated.
 
-A directory under `$XDG_STATE_HOME/kerfd/fake/`, shaped exactly like
+A directory under `$XDG_STATE_HOME/kerfd/sim/`, shaped exactly like
 the real interface, plus the state machine of what the kernel would
 have done:
 
@@ -206,14 +208,15 @@ have done:
   `tx_N`, and written out as `tx_N/{id,status,dtbo,instance}`; the
   instance is then materialized under `instances/NAME/`
 - `rmdir tx_N` genuinely un-materializes it, so rollback is testable
-- fake `kexec_file_load` moves `ready` to `loaded` and appends a row to
-  a fake `/proc/kimage` in the real column format `show` parses
-- fake `reboot(MULTIKERNEL)` moves `loaded` to `active` and starts a
-  synthetic console; fake `MULTIKERNEL_HALT` moves `active` back to
-  `ready`
-- memory is really tracked, and fake `/proc/iomem` renders pool chunks
+- a simulated `kexec_file_load` moves `ready` to `loaded` and appends a
+  row to a simulated `/proc/kimage`, in the real column format `show`
+  parses
+- a simulated `reboot(MULTIKERNEL)` moves `loaded` to `active` and starts
+  a synthetic console. A simulated `MULTIKERNEL_HALT` moves `active` back
+  to `ready`
+- memory is really tracked, and a simulated `/proc/iomem` renders chunks
   with their child allocations, so the pool genuinely fills up
-- a fault-injection setting makes a `tx` fail to apply, or a faked
+- a fault-injection setting makes a `tx` fail to apply, or a simulated
   syscall return an error
 - that setting can also mark an instance `failed`, which the real kernel
   never does (section 1). It exists to prove the UI degrades safely, not
@@ -428,7 +431,7 @@ The fd belongs to `kerfd-exec` (section 11), because `/dev/mktty` is the
 host's device and no instance can open a sibling's console. The API half
 relays bytes and holds no fd.
 
-`FakeHost` serves the same bridge from a pty pair fed by a synthetic
+`SimHost` serves the same bridge from a pty pair fed by a synthetic
 boot log, so the console page is built and tested with no hardware.
 
 ## 10. Running it: a socket, and where authority lives
@@ -458,7 +461,7 @@ connection and nothing else. `/etc/kerfd/config.toml` maps a uid to one
 of three capabilities, and it is the only authority:
 
 ```toml
-adapter = "live"                  # or "fake"
+adapter = "live"                  # or "sim"
 
 [capabilities]
 read    = ["alberto", "prometheus"]   # every GET
@@ -567,7 +570,7 @@ pool. Roughly two CPUs and 1 GB.
 
 It costs nothing in development. Both programs run on the host over the
 Unix socket, which is the degenerate case of the same split, and
-`FakeHost` sits under the executor either way. The instance deployment
+`SimHost` sits under the executor either way. The instance deployment
 changes one line of configuration and no code.
 
 ## 12. An autoscaler, and the number it must not trust
@@ -730,16 +733,16 @@ GET    /controller                  per instance: state, last decision, cooldown
 
 ### 12.10 Testing it without pressure
 
-`FakeHost` gains a synthetic reporter, and the tests drive the PSI series
+`SimHost` gains a synthetic reporter, and the tests drive the PSI series
 directly. Hysteresis, the clamps, `unknown` handling, a refused grow
 against a full chunk, a failed shrink, and the operator override are all
 testable with no hardware and no real memory pressure. This is the part
-of the panel that would otherwise be untestable, and the fake makes it
+of the panel that would otherwise be untestable, and the simulator makes it
 the best tested part instead.
 
 ## 13. Tests
 
-The contract tests run the whole API against `FakeHost`: every read
+The contract tests run the whole API against `SimHost`: every read
 shape, every mutation, every refusal, the tx log, rollback, a pool that
 fills, a stale lock, and the console bridge. They are written against
 the port, so the same bodies can later run against `LiveHost` on a real
@@ -762,7 +765,7 @@ script so a fixture can be regenerated rather than hand-patched.
 
 **It does not build the kernel.** Getting a multikernel host booting —
 `CONFIG_MULTIKERNEL`, `CONFIG_MKTTY`, `lazy_cma.ko`, `daxfs.ko` — is
-its own task on its own hardware. `FakeHost` exists so this one does
+its own task on its own hardware. `SimHost` exists so this one does
 not wait for it.
 
 It does, however, have to report a host built wrong, because one way is
@@ -820,7 +823,7 @@ changes.
 kerf-panel/
   exec/                      # kerfd-exec: the privileged half, on the host
     verbs.py                   the whole vocabulary, one function each
-    host/{ports,live,fake}.py  the seam of section 2
+    host/{ports,live,sim}.py   the seam of section 2
     listen/{uds,vsock}.py      SO_PEERCRED and CID identity
     auth/capabilities.py       the config of section 10 is the authority
     fork.py                    one child per mutation
@@ -848,7 +851,7 @@ kerf-panel/
 
 ## 16. Order of work
 
-1. `FakeHost` and the fixture builder, with the port defined first.
+1. `SimHost` and the fixture builder, with the port defined first.
 2. `kerfd-exec` over the Unix socket: the verb list, `SO_PEERCRED`, the
    capability config, the `[load]` allowlist.
 3. `kerfd-api` and its client, both on the host. The read routes, and
@@ -873,10 +876,10 @@ kerf-panel/
 1. **Does `/dev/mktty` admit more than one reader per instance?** The
    WebSocket bridge is single-viewer if not, and the panel has to say
    so rather than silently stealing a terminal's console. Unknown
-   without hardware; the fake supports both so the UI can be built
+   without hardware. The simulator supports both, so the UI can be built
    either way.
 2. **Should tearing the pool down require typing the host name?** It is
    the most destructive operation in the set and it is one `DELETE`.
-3. **The fake's boot log.** Synthetic text is enough to build the
+3. **The simulator's boot log.** Synthetic text is enough to build the
    console page. Replaying a captured real boot would be better and
    costs nothing once there is a host to capture one from.

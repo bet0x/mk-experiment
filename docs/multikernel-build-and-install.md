@@ -28,7 +28,7 @@ configuration symbols it omits.
 ### 1.3 What is not in this document
 
 - The control panel. A separate design document exists at
-  `docs/kerf-only-the-kernel-is-fake.md`.
+  `docs/kerf-only-the-kernel-is-simulated.md`.
   It is a design only. Do not build it from this document.
 - The assignment of a PCI device to an instance. `kerf init --devices`
   does this, and it needs its own procedure.
