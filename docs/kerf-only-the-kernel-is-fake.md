@@ -1,4 +1,4 @@
-# A panel that fakes only the syscalls
+# Only the kernel is fake
 
 mk-experiment/kerf-panel. A control panel for `kerf`, the multikernel
 management tool at github.com/multikernel/kerf. Two pieces: `kerfd`, an
@@ -124,8 +124,8 @@ kerfd/host/live.py      LiveHost — real kerf, real syscalls, needs root
 kerfd/host/fake.py      FakeHost — fake sysfs tree, fake syscalls
 ```
 
-**The rule the whole project follows: fake only the privileged
-syscalls.** Everything else in `FakeHost` is real. Real `pylibfdt`
+**The rule the whole project follows: fake the kernel, and nothing
+above it.** Everything in `FakeHost` that is not the kernel is real. Real `pylibfdt`
 blobs, real DTBO generation by kerf's own `OverlayGenerator`, real
 validation by kerf's own `MultikernelValidator`. A fake `create` that
 asks for a CPU another instance holds fails with kerf's genuine error
@@ -188,6 +188,14 @@ functions with no click in them, so they are imported directly:
 
 ## 4. `FakeHost`, the emulator
 
+`FakeHost` stands in for the kernel's side of every interface kerf
+touches, and that is more than the syscalls: three syscalls
+(`kexec_file_load` and the two `reboot` commands), two character devices
+(`/dev/mktty` and `/dev/dma_heap/multikernel`), three procfs files, the
+NUMA sysfs tree, and the whole kernfs filesystem with its overlay
+transactions and its instance state machine. The title of this document
+is a claim about the other direction: nothing above the kernel is faked.
+
 A directory under `$XDG_STATE_HOME/kerfd/fake/`, shaped exactly like
 the real interface, plus the state machine of what the kernel would
 have done:
@@ -205,8 +213,11 @@ have done:
   `ready`
 - memory is really tracked, and fake `/proc/iomem` renders pool chunks
   with their child allocations, so the pool genuinely fills up
-- a fault-injection setting sends the next operation to `failed`
-  instead, or makes a `tx` fail to apply
+- a fault-injection setting makes a `tx` fail to apply, or a faked
+  syscall return an error
+- that setting can also mark an instance `failed`, which the real kernel
+  never does (section 1). It exists to prove the UI degrades safely, not
+  because production reaches that state
 
 Fixtures describe one plausible machine — two sockets, four NUMA nodes,
 an NVMe and two NICs — and ship as **real DTBs** built by kerf's own
